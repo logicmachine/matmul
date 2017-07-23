@@ -16,6 +16,13 @@ static constexpr size_t M_R =   6;
 static constexpr size_t M_C = 192;
 static constexpr size_t K_C = 256;
 
+template <typename T>
+inline T *aligned_malloc(size_t n){
+	void *ptr = nullptr;
+	if(posix_memalign(&ptr, ALIGNMENT, n * sizeof(T)) != 0){ return nullptr; }
+	return static_cast<T *>(ptr);
+}
+
 inline __m256i mm256_make_mask(size_t i){
 	static const uint32_t table[] __attribute__((aligned(ALIGNMENT))) = {
 		~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u,
@@ -36,12 +43,12 @@ inline void pack_Bp(value_type *Bp, const Matrix& B, size_t k0){
 		const value_type *src = &B(k0, j0);
 		value_type *dst = Bp + j0 * K_C;
 		const __m256i mask0 = mm256_make_mask(M - j0);
-		const __m256i mask1 = mm256_make_mask(j0 +  8 < M ? M - j0 -  8 : 0);
+		const __m256i mask1 = mm256_make_mask(j0 + 8 < M ? M - j0 - 8 : 0);
 		for(size_t k = k_lo; k < k_hi; ++k){
-			const __m256 b0 = _mm256_maskload_ps(src +  0, mask0);
-			const __m256 b1 = _mm256_maskload_ps(src +  8, mask1);
-			_mm256_store_ps(dst +  0, b0);
-			_mm256_store_ps(dst +  8, b1);
+			const __m256 b0 = _mm256_maskload_ps(src + 0, mask0);
+			const __m256 b1 = _mm256_maskload_ps(src + 8, mask1);
+			_mm256_store_ps(dst + 0, b0);
+			_mm256_store_ps(dst + 8, b1);
 			src += M;
 			dst += N_R;
 		}
@@ -100,11 +107,6 @@ inline void compute_patch(
 	const size_t k_lo = k0, k_hi = std::min(K, k0 + K_C);
 
 	float *cptr0 = &C(std::min(i0 + 0, N - 1), j0);
-	float *cptr1 = cptr0 + (i0 + 1 < N ? M : 0);
-	float *cptr2 = cptr1 + (i0 + 2 < N ? M : 0);
-	float *cptr3 = cptr2 + (i0 + 3 < N ? M : 0);
-	float *cptr4 = cptr3 + (i0 + 4 < N ? M : 0);
-	float *cptr5 = cptr4 + (i0 + 5 < N ? M : 0);
 
 	const __m256 zero = _mm256_setzero_ps();
 	__m256 c00 = zero, c01 = zero;
@@ -156,65 +158,62 @@ inline void compute_patch(
 	for(; k + UNROLL_COUNT + PREFETCH_BREAK <= k_hi; k += UNROLL_COUNT){
 		UNROLLED();
 	}
+	_mm_prefetch(reinterpret_cast<const char *>(cptr0 + M * 5), _MM_HINT_T0);
+	_mm_prefetch(reinterpret_cast<const char *>(cptr0 + M * 4), _MM_HINT_T0);
+	_mm_prefetch(reinterpret_cast<const char *>(cptr0 + M * 3), _MM_HINT_T0);
+	_mm_prefetch(reinterpret_cast<const char *>(cptr0 + M * 2), _MM_HINT_T0);
+	_mm_prefetch(reinterpret_cast<const char *>(cptr0 + M), _MM_HINT_T0);
 	_mm_prefetch(reinterpret_cast<const char *>(cptr0), _MM_HINT_T0);
-	_mm_prefetch(reinterpret_cast<const char *>(cptr1), _MM_HINT_T0);
-	_mm_prefetch(reinterpret_cast<const char *>(cptr2), _MM_HINT_T0);
-	_mm_prefetch(reinterpret_cast<const char *>(cptr3), _MM_HINT_T0);
-	_mm_prefetch(reinterpret_cast<const char *>(cptr4), _MM_HINT_T0);
-	_mm_prefetch(reinterpret_cast<const char *>(cptr5), _MM_HINT_T0);
 	for(; k + UNROLL_COUNT <= k_hi; k += UNROLL_COUNT){ UNROLLED(); }
 	for(; k < k_hi; ++k){ UNROLL_BLOCK(); }
 
+#undef UNROLLED
+#undef UNROLL_BLOCK
+
 	if(j0 + N_R <= M){
-		const __m256 t50 = _mm256_loadu_ps(cptr5 +  0);
-		const __m256 t51 = _mm256_loadu_ps(cptr5 +  8);
-		_mm256_storeu_ps(cptr5 +  0, _mm256_add_ps(t50, c50));
-		_mm256_storeu_ps(cptr5 +  8, _mm256_add_ps(t51, c51));
-		const __m256 t40 = _mm256_loadu_ps(cptr4 +  0);
-		const __m256 t41 = _mm256_loadu_ps(cptr4 +  8);
-		_mm256_storeu_ps(cptr4 +  0, _mm256_add_ps(t40, c40));
-		_mm256_storeu_ps(cptr4 +  8, _mm256_add_ps(t41, c41));
-		const __m256 t30 = _mm256_loadu_ps(cptr3 +  0);
-		const __m256 t31 = _mm256_loadu_ps(cptr3 +  8);
-		_mm256_storeu_ps(cptr3 +  0, _mm256_add_ps(t30, c30));
-		_mm256_storeu_ps(cptr3 +  8, _mm256_add_ps(t31, c31));
-		const __m256 t20 = _mm256_loadu_ps(cptr2 +  0);
-		const __m256 t21 = _mm256_loadu_ps(cptr2 +  8);
-		_mm256_storeu_ps(cptr2 +  0, _mm256_add_ps(t20, c20));
-		_mm256_storeu_ps(cptr2 +  8, _mm256_add_ps(t21, c21));
-		const __m256 t10 = _mm256_loadu_ps(cptr1 +  0);
-		const __m256 t11 = _mm256_loadu_ps(cptr1 +  8);
-		_mm256_storeu_ps(cptr1 +  0, _mm256_add_ps(t10, c10));
-		_mm256_storeu_ps(cptr1 +  8, _mm256_add_ps(t11, c11));
-		const __m256 t00 = _mm256_loadu_ps(cptr0 +  0);
-		const __m256 t01 = _mm256_loadu_ps(cptr0 +  8);
-		_mm256_storeu_ps(cptr0 +  0, _mm256_add_ps(t00, c00));
-		_mm256_storeu_ps(cptr0 +  8, _mm256_add_ps(t01, c01));
+		__m256 t0, t1;
+#define WRITE_ROW(r) \
+		do { \
+			t0 = _mm256_loadu_ps(cptr0 + M * (r) + 0); \
+			t1 = _mm256_loadu_ps(cptr0 + M * (r) + 8); \
+			t0 = _mm256_add_ps(t0, c ## r ## 0); \
+			t1 = _mm256_add_ps(t1, c ## r ## 1); \
+			_mm256_storeu_ps(cptr0 + M * (r) + 0, t0); \
+			_mm256_storeu_ps(cptr0 + M * (r) + 8, t1); \
+		} while(false)
+		switch(N - i0){
+		default: WRITE_ROW(5);
+		case 5:  WRITE_ROW(4);
+		case 4:  WRITE_ROW(3);
+		case 3:  WRITE_ROW(2);
+		case 2:  WRITE_ROW(1);
+		case 1:  WRITE_ROW(0);
+		case 0:  break;
+		}
+#undef WRITE_ROW
 	}else{
-		const __m256 t00 = mm256_load_from_matrix(C, i0 + 0, j0 +  0);
-		const __m256 t01 = mm256_load_from_matrix(C, i0 + 0, j0 +  8);
-		mm256_store_to_matrix(C, i0 + 0, j0 +  0, _mm256_add_ps(t00, c00));
-		mm256_store_to_matrix(C, i0 + 0, j0 +  8, _mm256_add_ps(t01, c01));
-		const __m256 t10 = mm256_load_from_matrix(C, i0 + 1, j0 +  0);
-		const __m256 t11 = mm256_load_from_matrix(C, i0 + 1, j0 +  8);
-		mm256_store_to_matrix(C, i0 + 1, j0 +  0, _mm256_add_ps(t10, c10));
-		mm256_store_to_matrix(C, i0 + 1, j0 +  8, _mm256_add_ps(t11, c11));
-		const __m256 t20 = mm256_load_from_matrix(C, i0 + 2, j0 +  0);
-		const __m256 t21 = mm256_load_from_matrix(C, i0 + 2, j0 +  8);
-		mm256_store_to_matrix(C, i0 + 2, j0 +  0, _mm256_add_ps(t20, c20));
-		mm256_store_to_matrix(C, i0 + 2, j0 +  8, _mm256_add_ps(t21, c21));
-		const __m256 t30 = mm256_load_from_matrix(C, i0 + 3, j0 +  0);
-		const __m256 t31 = mm256_load_from_matrix(C, i0 + 3, j0 +  8);
-		mm256_store_to_matrix(C, i0 + 3, j0 +  0, _mm256_add_ps(t30, c30));
-		mm256_store_to_matrix(C, i0 + 3, j0 +  8, _mm256_add_ps(t31, c31));
-		const __m256 t40 = mm256_load_from_matrix(C, i0 + 4, j0 +  0);
-		const __m256 t41 = mm256_load_from_matrix(C, i0 + 4, j0 +  8);
-		mm256_store_to_matrix(C, i0 + 4, j0 +  0, _mm256_add_ps(t40, c40));
-		mm256_store_to_matrix(C, i0 + 4, j0 +  8, _mm256_add_ps(t41, c41));
-		const __m256 t50 = mm256_load_from_matrix(C, i0 + 5, j0 +  0);
-		const __m256 t51 = mm256_load_from_matrix(C, i0 + 5, j0 +  8);
-		mm256_store_to_matrix(C, i0 + 5, j0 +  0, _mm256_add_ps(t50, c50));
-		mm256_store_to_matrix(C, i0 + 5, j0 +  8, _mm256_add_ps(t51, c51));
+		const __m256i mask0 = mm256_make_mask(M - j0);
+		const __m256i mask1 = mm256_make_mask(j0 + 8 < M ? M - j0 - 8 : 0);
+		__m256 t0, t1;
+#define WRITE_ROW(r) \
+		do { \
+			t0 = _mm256_maskload_ps(cptr0 + M * (r) + 0, mask0); \
+			t1 = _mm256_maskload_ps(cptr0 + M * (r) + 8, mask1); \
+			t0 = _mm256_add_ps(t0, c ## r ## 0); \
+			t1 = _mm256_add_ps(t1, c ## r ## 1); \
+			_mm256_maskstore_ps(cptr0 + M * (r) + 0, mask0, t0); \
+			_mm256_maskstore_ps(cptr0 + M * (r) + 8, mask1, t1); \
+		} while(false)
+		switch(N - i0){
+		default: WRITE_ROW(5);
+		case 5:  WRITE_ROW(4);
+		case 4:  WRITE_ROW(3);
+		case 3:  WRITE_ROW(2);
+		case 2:  WRITE_ROW(1);
+		case 1:  WRITE_ROW(0);
+		case 0:  break;
+		}
+#undef WRITE_ROW
 	}
 }
 
@@ -227,11 +226,9 @@ void matmul(Matrix& C, const Matrix& A, const Matrix& B){
 	assert(C.rows() == N);
 	assert(C.cols() == M);
 
-	const size_t kBp = (M + N_R - 1) / N_R * N_R;
+	const size_t kBp = (M + N_R - 1) / N_R;
 	std::unique_ptr<value_type, decltype(&free)> Bp(
-		static_cast<value_type *>(aligned_alloc(
-			sizeof(value_type) * kBp * N_R * K_C, ALIGNMENT)),
-		free);
+		aligned_malloc<value_type>(kBp * N_R * K_C), free);
 
 	static thread_local value_type Ap[M_C * K_C]
 		__attribute__((aligned(ALIGNMENT)));
