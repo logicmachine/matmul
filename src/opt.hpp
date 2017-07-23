@@ -247,6 +247,12 @@ void matmul(Matrix& C, const Matrix& A, const Matrix& B){
 		if(mc_score(t) >= mc_score(M_C)){ M_C = t; }
 	}
 
+#pragma omp parallel for
+	for(size_t i = 0; i < N; ++i){
+		float *row = &C(i, 0);
+		for(size_t j = 0; j < M; ++j){ row[j] = 0.0f; }
+	}
+
 #pragma omp parallel
 	for(size_t k0 = 0; k0 < K; k0 += K_C){
 		pack_Bp(Bp.get(), B, k0);
