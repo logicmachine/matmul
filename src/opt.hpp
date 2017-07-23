@@ -2,6 +2,7 @@
 #define OPT_HPP_
 
 #include <cassert>
+#include <omp.h>
 #include "matrix.hpp"
 
 namespace opt {
@@ -13,8 +14,9 @@ using value_type = typename Matrix::value_type;
 static constexpr size_t ALIGNMENT = 32;
 static constexpr size_t N_R =  16;
 static constexpr size_t M_R =   6;
-static constexpr size_t M_C = 192;
 static constexpr size_t K_C = 256;
+static constexpr size_t MIN_M_C = 128;
+static constexpr size_t MAX_M_C = 256 - N_R;
 
 template <typename T>
 inline T *aligned_malloc(size_t n){
@@ -55,7 +57,9 @@ inline void pack_Bp(value_type *Bp, const Matrix& B, size_t k0){
 	}
 }
 
-inline void pack_Ap(value_type *Ap, const Matrix& A, size_t k0, size_t i0){
+inline void pack_Ap(
+	value_type *Ap, const Matrix& A, size_t M_C, size_t k0, size_t i0)
+{
 	const size_t N = A.rows(), K = A.cols();
 	const size_t k_lo = k0, k_hi = std::min(K, k0 + K_C);
 	const size_t i_lo = i0, i_hi = std::min(N, i0 + M_C);
@@ -230,8 +234,18 @@ void matmul(Matrix& C, const Matrix& A, const Matrix& B){
 	std::unique_ptr<value_type, decltype(&free)> Bp(
 		aligned_malloc<value_type>(kBp * N_R * K_C), free);
 
-	static thread_local value_type Ap[M_C * K_C]
+	static thread_local value_type Ap[MAX_M_C * K_C]
 		__attribute__((aligned(ALIGNMENT)));
+
+	const size_t num_threads = omp_get_max_threads();
+	const auto mc_score = [N, num_threads](size_t mc) -> size_t {
+		const size_t num_tasks = (N + mc - 1) / mc;
+		return (num_tasks + num_threads - 1) % num_threads;
+	};
+	size_t M_C = (MIN_M_C + M_R - 1) / M_R * M_R;
+	for(size_t t = M_C; t <= MAX_M_C; t += M_R){
+		if(mc_score(t) >= mc_score(M_C)){ M_C = t; }
+	}
 
 #pragma omp parallel
 	for(size_t k0 = 0; k0 < K; k0 += K_C){
@@ -240,7 +254,7 @@ void matmul(Matrix& C, const Matrix& A, const Matrix& B){
 #pragma omp for
 		for(size_t i0 = 0; i0 < N; i0 += M_C){
 			const size_t i_lo = i0, i_hi = std::min(N, i0 + M_C);
-			pack_Ap(Ap, A, k0, i0);
+			pack_Ap(Ap, A, M_C, k0, i0);
 			for(size_t j = 0; j < M; j += N_R){
 				for(size_t i = i_lo; i < i_hi; i += M_R){
 					compute_patch(
